@@ -45,33 +45,34 @@ int (*ff_kqueue_ptr)(void);
 int (*ff_epoll_create_ptr)(int);
 int (*ff_epoll_ctl_ptr)(int, int, int, struct epoll_event *);
 int (*ff_epoll_wait_ptr)(int, struct epoll_event *, int, int);
+ssize_t (*ff_read_ptr)(int, void *, size_t);
+ssize_t (*ff_write_ptr)(int, const void *, size_t);
 
 
-#if 1
 int loop(void *arg) {
     /* Wait for events to happen */
 
-    int nevents = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 0);
+    int nevents = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 100);
     int i;
-    if (nevents > 0) {
-	    printf("Number of events %d\n", nevents);
-    }
+    //if (nevents > 0) {
+	    //printf("Number of events %d\n", nevents);
+    //}
 
     for (i = 0; i < nevents; ++i) {
         /* Handle new connect */
         if (events[i].data.fd == sockfd) {
 	    printf("was equal sockfd\n");
-#if 0
+#if 1
             while (1) {
-                int nclientfd = ff_accept(sockfd, NULL, NULL);
+                int nclientfd = ff_accept_ptr(sockfd, NULL, NULL);
                 if (nclientfd < 0) {
                     break;
                 }
 
                 /* Add to event list */
-                ev.data.fd = nclientfd;
-                ev.events  = EPOLLIN;
-                if (ff_epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) != 0) {
+                event.data.fd = nclientfd;
+                event.events  = EPOLLIN;
+                if (ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, nclientfd, &event) != 0) {
                     printf("ff_epoll_ctl failed:%d, %s\n", errno,
                         strerror(errno));
                     break;
@@ -79,36 +80,36 @@ int loop(void *arg) {
             }
 #endif
         } else {
-	    printf("was not equal sockfd\n");
-#if 0
+	    //printf("was not equal sockfd\n");
+#if 1
             if (events[i].events & EPOLLERR ) {
                 /* Simply close socket */
-                ff_epoll_ctl_ptr(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+                ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
                 ff_close_ptr(events[i].data.fd);
             } else if (events[i].events & EPOLLIN) {
                 char buf[256];
-                size_t readlen = ff_read( events[i].data.fd, buf, sizeof(buf));
+                size_t readlen = ff_read_ptr( events[i].data.fd, buf, sizeof(buf));
+		printf("READ this: %s\n", buf);
                 if(readlen > 0) {
-                    ff_write( events[i].data.fd, html, sizeof(html) - 1);
+                    ff_write_ptr(events[i].data.fd, buf, readlen);
                 } else {
-                    ff_epoll_ctl_ptr(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
-                    ff_close_ptr( events[i].data.fd);
+                    ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+                    ff_close_ptr(events[i].data.fd);
                 }
             } else {
                 printf("unknown event: %8.8X\n", events[i].events);
             }
-        }
 #endif
+        }
     }
     return 0;
 }
-#endif
 
 // In f-stack mode, run like:
 // ./client --conf /data/f-stack/config.ini --proc-type=primary --proc-id=0
 int main(int argc, char * const argv[]) {
 
-	int sockfd, ret;
+	int ret;
 	struct sockaddr_in serverAddr;
 
 	int newSocket;
@@ -151,6 +152,8 @@ int main(int argc, char * const argv[]) {
 		ff_epoll_create_ptr = (int (*)(int))dlsym(handle, "ff_epoll_create");
 		ff_epoll_ctl_ptr = (int (*)(int, int, int, struct epoll_event *))dlsym(handle, "ff_epoll_ctl");
 		ff_epoll_wait_ptr = (int (*)(int, struct epoll_event *, int, int))dlsym(handle, "ff_epoll_wait");
+		ff_read_ptr = (ssize_t (*)(int, void *, size_t))dlsym(handle, "ff_read");
+		ff_write_ptr = (ssize_t (*)(int, const void *, size_t))dlsym(handle, "ff_write");
 
 		if (	!ff_socket_ptr ||
 			!ff_send_ptr ||
@@ -166,6 +169,8 @@ int main(int argc, char * const argv[]) {
 			!ff_epoll_wait_ptr ||
 			!ff_kqueue_ptr ||
 			!ff_listen_ptr ||
+			!ff_read_ptr ||
+			!ff_write_ptr ||
 			!ff_accept_ptr) {
 			fprintf(stderr, "Error(rest): %s\n", dlerror());
 			dlclose(handle);
@@ -261,49 +266,5 @@ int main(int argc, char * const argv[]) {
 
 	ff_run_ptr(loop, NULL);
 
-#if 0
-	while (1) {
-		int n = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 0);
-		if (n == 0) {
-			usleep(100);
-			continue;
-		}
-		printf("epoll_wait returned %d events\n", n);
-		for (int i = 0; i < n; i++) {
-			if ((events[i].events & EPOLLERR) ||
-					(events[i].events & EPOLLHUP) ||
-					(!(events[i].events & EPOLLIN)))
-			{
-				/* An error has occured on this fd, or the socket is not
-				   ready for reading (why were we notified then?) */
-				fprintf (stderr, "epoll error\n");
-				close (events[i].data.fd);
-				continue;
-			}
-		}
-
-
-		newSocket = ff_accept_ptr(sockfd, (struct sockaddr*)&newAddr, &addr_size);
-		if(newSocket < 0){
-			printf("error happened in accept\n");
-			exit(1);
-		}
-
-		printf("Connection accepted from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
-
-		ff_recv_ptr(newSocket, buffer, 1024, 0);
-		if(strcmp(buffer, ":exit") == 0){
-			printf("Disconnected from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
-			break;
-		} else {
-			printf("Client: %s\n", buffer);
-			ff_send_ptr(newSocket, buffer, strlen(buffer), 0);
-			bzero(buffer, sizeof(buffer));
-		}
-
-	}
-
-	ff_close_ptr(newSocket);
-#endif
 	return 0;
 }
