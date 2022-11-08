@@ -17,15 +17,19 @@
 #include <errno.h>
 #include <assert.h>
 #include <sys/ioctl.h>
+#include <rte_pdump.h>
+#include <signal.h>
 
 #define PORT 3679
 #define MAX_EVENTS 512
 #define USE_FSTACK 1
 
 int clientSocket;
+struct sockaddr_in serverAddr;
 int epoll_fd;
 struct epoll_event event;
 struct epoll_event *events;
+int ret;
 
 int (*ff_init_ptr)(int, char * const);
 int (*ff_socket_ptr)(int, int, int);
@@ -47,74 +51,65 @@ int (*ff_fcntl_ptr)(int, int, ...);
 int (*ff_ioctl_ptr)(int, unsigned long, ...);
 int (*ff_getsockopt_ptr)(int, int, int, void *, socklen_t *);
 
-int firstTime = 0;
+
+static void
+signal_handler(int signum)
+{
+	if (signum == SIGINT || signum == SIGTERM) {
+		fprintf(stderr, "\nSignal %d received, preparing to exit...\n",
+			signum);
+		/* uninitialize packet capture framework */
+		rte_pdump_uninit();
+		signal(signum, SIG_DFL);
+		kill(getpid(), signum);
+	}
+}
+
 int loop(void *arg) {
-
-#if 0
-	memset(&event, 0, sizeof(event));
-	event.events = EPOLLIN | EPOLLOUT;
-	event.data.fd = clientSocket;
-	ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, clientSocket, &event);
-#endif
-
 	int nevents;
 	int i;
-	if (!firstTime) {
-		nevents = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 10000);
+	nevents = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 10000);
+	printf("Number of events %d\n", nevents);
 
-		if (nevents > 0) {
-			printf("Number of events %d\n", nevents);
-		}
-	}
-
-#if 0
-	// I probably should copy this out to before loop is started, this is just to know if the connection was successful
 	for (int i = 0; i < nevents; i++) {
-		int err = -1;
-		socklen_t len = sizeof(int);
-		if (ff_getsockopt_ptr(events[i].data.fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0){
-			ff_close_ptr(clientSocket);
-			printf("getsockopt errno:%d %s\n", errno, strerror(errno));
-			return -2;
+		assert(events[i].data.fd == clientSocket);
+		if (events[i].events & EPOLLERR) {
+			printf("We hit error EPOLLERR\n");
+			ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
+			ff_close_ptr(events[i].data.fd);
 		}
-	}
-#endif
+		else if(events[i].events & EPOLLIN) {
+			printf("Socket %d is ready to be read from\n", events[i].data.fd);
+			char buf[256];
+			size_t readlen = ff_read_ptr(events[i].data.fd, buf, sizeof(buf));
+			printf("READ this: %s\n", buf);
+		} else if (events[i].events & EPOLLOUT) {
+			printf("Socket %d is ready to be written to\n", events[i].data.fd);
+			printf("Client: \t");
 
-	if (!firstTime) {
-		for (int i = 0; i < nevents; i++) {
-			if (events[i].events & EPOLLERR) {
-				printf("We hit error EPOLLERR\n");
-				ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
-				ff_close_ptr(events[i].data.fd);
+			const int bufsize = 512;
+			char buf[bufsize];
+			scanf("%s", &buf[0]);
+			for (int j = strlen(buf); j < bufsize; j++) {
+				buf[j] = '-';
 			}
-			else if(events[i].events & EPOLLIN) {
-				printf("Socket %d is ready to be read from\n", events[i].data.fd);
-				char buf[256];
-				size_t readlen = ff_read_ptr( events[i].data.fd, buf, sizeof(buf));
-				printf("READ this: %s\n", buf);
-			} else if (events[i].events & EPOLLOUT) {
-				firstTime = 1;
-				printf("Socket %d is ready to be written to\n", events[i].data.fd);
-				printf("Client: \t");
-				char buf[256];
-				scanf("%s", &buf[0]);
-				ff_write_ptr(events[i].data.fd, buf, strlen(buf));
+			buf[bufsize - 1] = '\0';
 
-#if 0
-				event.events = EPOLLIN | EPOLLOUT;
-				event.data.fd = clientSocket;
-				ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, clientSocket, &event);
-#endif
-			}
-			printf("Event content: %u\n", (unsigned)events[i].events);
+			unsigned written_len = ff_write_ptr(events[i].data.fd, buf, strlen(buf));
+			printf("Wrote %u bytes\n", written_len);
+			//ff_send_ptr(events[i].data.fd, buf, strlen(buf), 0);
+
+			//ff_send_ptr(events[i].data.fd, buf2, strlen(buf2), 0);
+
+			// Remove the last event and insert a new request (for a writtable event)
+			//ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+
+			//event.events = EPOLLOUT;
+			//event.data.fd = clientSocket;
+			//ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, clientSocket, &event);
 		}
-	} else {
-				printf("Client: \t");
-				char buf[256];
-				scanf("%s", &buf[0]);
-				ff_write_ptr(events[i].data.fd, buf, strlen(buf));
+		printf("Event content: %u\n", (unsigned)events[i].events);
 	}
-	//printf("All done, nevents %d\n", nevents);
 
 }
 
@@ -122,9 +117,10 @@ int loop(void *arg) {
 // ./client --conf /data/f-stack/config.ini --proc-type=primary --proc-id=0
 int main(int argc, char * const argv[]) {
 
-	int ret;
-	struct sockaddr_in serverAddr;
 	char buffer[1024];
+
+	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
 
 	void *handle;
 	handle = dlopen("libfstack.so", RTLD_NOW);
@@ -197,29 +193,27 @@ int main(int argc, char * const argv[]) {
     		ff_close_ptr = &close;
 	}
 
-	//clientSocket = ff_socket_ptr(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-	clientSocket = ff_socket_ptr(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	clientSocket = ff_socket_ptr(AF_INET, SOCK_STREAM, 0);
 	if(clientSocket < 0){
 		printf("[-]Error in connection.\n");
 		exit(1);
 	}
 	printf("[+]Client Socket is created.\n");
 
+	printf("Initializing pdump lib..\n");
+	rte_pdump_init();
+
 	int on = 1;
-	//ret = ff_fcntl_ptr(clientSocket, FIONBIO, &on);
 	ret = ff_ioctl_ptr(clientSocket, FIONBIO, &on);
 	if (ret < 0) {
 		printf("[-] error in fcntl. errno: %d, %s\n", errno, strerror(errno));
 		return 0;
 	}
 
-
-	//memset(&serverAddr, '\0', sizeof(serverAddr));
-	memset(&serverAddr, 0, sizeof(serverAddr));
+	memset(&serverAddr, '\0', sizeof(serverAddr));
 	serverAddr.sin_family = AF_INET;
 	serverAddr.sin_port = htons(PORT);
 	serverAddr.sin_addr.s_addr = inet_addr("10.250.136.19");
-	//serverAddr.sin_addr.s_addr = inet_addr("10.250.136.21");
 	
 	/*---Connect to server---*/
 	if (ff_connect_ptr(clientSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) != 0 ) {
@@ -229,15 +223,6 @@ int main(int argc, char * const argv[]) {
 		}
 		printf("ff_connect returns errno: %d, %s\n", errno, strerror(errno));
 	}
-
-
-#if 0
-	/*---Add socket to epoll---*/
-	epoll_fd = ff_epoll_create_ptr(1);
-	event.events = EPOLLIN | EPOLLOUT;
-	event.data.fd = clientSocket;
-	ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, clientSocket, &event);
-#endif
 
 	int err = -1;
 	socklen_t len = sizeof(int);
@@ -249,33 +234,18 @@ int main(int argc, char * const argv[]) {
 	}
 	printf("ff_getsockopt_ptr's return value: %d\n", ret);
 
-#if 1
 	/*---Add socket to epoll---*/
 	epoll_fd = ff_epoll_create_ptr(1);
 	event.events = EPOLLIN | EPOLLOUT;
+	event.events = EPOLLOUT;
 	event.data.fd = clientSocket;
 	ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, clientSocket, &event);
-#endif
 
 	events = calloc (MAX_EVENTS, sizeof event);
 	ff_run_ptr(loop, NULL);
 
 
 #if 0
-	//ret = ff_connect_ptr(clientSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
-	char myIP[16];
-	inet_ntop(AF_INET, &serverAddr.sin_addr, myIP, sizeof(myIP));
-	int myPort = ntohs(serverAddr.sin_port);
-	printf("Attempting connect to port %d on IP %s\n", myPort, myIP);
-	ret = ff_connect_ptr(clientSocket, (struct linux_sockaddr *)&serverAddr, sizeof(serverAddr));
-#if 1
-	if(ret < 0){
-		printf("[-]Error in connection. error code: %d (errno: %d, %s)\n", ret, errno, strerror(errno));
-		exit(1);
-	}
-#endif
-	printf("[+]Connected to Server.\n");
-
 	while(1){
 		printf("Client: \t");
 		scanf("%s", &buffer[0]);
@@ -297,3 +267,4 @@ int main(int argc, char * const argv[]) {
 
 	return 0;
 }
+

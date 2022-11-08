@@ -261,15 +261,17 @@ int main(int argc, char * const argv[]) {
 	ff_run_ptr(loop, NULL);
 #endif
 
-	while(1){
+	while (1) {
 		newSocket = ff_accept_ptr(sockfd, (struct sockaddr*)&newAddr, &addr_size);
 		if(newSocket < 0){
 			exit(1);
 		}
 		printf("Connection accepted from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
 
+#if 0
 		if((childpid = fork()) == 0){
 			close(sockfd);
+#endif
 
 			while(1){
 				printf("Waiting for client to send somethin\n");
@@ -279,11 +281,13 @@ int main(int argc, char * const argv[]) {
 					break;
 				}else{
 					printf("Client: %s\n", buffer);
-					//send(newSocket, buffer, strlen(buffer), 0);
+					send(newSocket, buffer, strlen(buffer), 0);
 					bzero(buffer, sizeof(buffer));
 				}
 			}
+#if 0
 		}
+#endif
 
 	}
 
