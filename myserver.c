@@ -15,7 +15,7 @@
 #include <errno.h>
 #include <assert.h>
 
-#define PORT 3675
+#define PORT 3679
 #define MAX_EVENTS 512
 
 /* kevent set */
@@ -52,11 +52,14 @@ ssize_t (*ff_write_ptr)(int, const void *, size_t);
 int loop(void *arg) {
     /* Wait for events to happen */
 
-    int nevents = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 100);
+	int nevents;
+	do {
+		int nevents = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 100);
+	} while (nevents <= 0);
     int i;
-    //if (nevents > 0) {
-	    //printf("Number of events %d\n", nevents);
-    //}
+    if (nevents > 0) {
+	    printf("Number of events %d\n", nevents);
+    }
 
     for (i = 0; i < nevents; ++i) {
         /* Handle new connect */
@@ -198,6 +201,8 @@ int main(int argc, char * const argv[]) {
 		ff_epoll_create_ptr = &epoll_create;
 		ff_epoll_ctl_ptr = &epoll_ctl;
 		ff_epoll_wait_ptr = &epoll_wait;
+		ff_read_ptr = &read;
+		ff_write_ptr = &write;
 	}
 
 
@@ -211,9 +216,10 @@ int main(int argc, char * const argv[]) {
     	bzero(&serverAddr, sizeof(serverAddr));
 	serverAddr.sin_family = AF_INET;
 	serverAddr.sin_port = htons(PORT);
-	//serverAddr.sin_addr.s_addr = inet_addr("10.250.136.19");
+	// s12's Linux Kernel
+	serverAddr.sin_addr.s_addr = inet_addr("10.250.136.19");
 	// s13's DPDK
-	serverAddr.sin_addr.s_addr = inet_addr("10.250.136.21");
+	//serverAddr.sin_addr.s_addr = inet_addr("10.250.136.21");
 	// s13's Linux Kernel
 	//serverAddr.sin_addr.s_addr = inet_addr("10.250.136.99");
 
@@ -239,6 +245,14 @@ int main(int argc, char * const argv[]) {
 	}
 
 #if 0
+	int nclientfd = ff_accept_ptr(sockfd, NULL, NULL);
+	if (nclientfd < 0) {
+		printf("[-]Error in accept.\n");
+	}
+	printf("Accept is done\n");
+#endif
+
+#if 0
 	EV_SET(&kevSet, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
 	/* Update kqueue */
 	ff_kevent_ptr(kq, &kevSet, 1, NULL, 0, NULL);
@@ -247,8 +261,34 @@ int main(int argc, char * const argv[]) {
 	ff_run_ptr(loop, NULL);
 #endif
 
+	while(1){
+		newSocket = ff_accept_ptr(sockfd, (struct sockaddr*)&newAddr, &addr_size);
+		if(newSocket < 0){
+			exit(1);
+		}
+		printf("Connection accepted from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
 
-	epoll_fd = ff_epoll_create_ptr(0);
+		if((childpid = fork()) == 0){
+			close(sockfd);
+
+			while(1){
+				printf("Waiting for client to send somethin\n");
+				recv(newSocket, buffer, 1024, 0);
+				if(strcmp(buffer, ":exit") == 0){
+					printf("Disconnected from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
+					break;
+				}else{
+					printf("Client: %s\n", buffer);
+					//send(newSocket, buffer, strlen(buffer), 0);
+					bzero(buffer, sizeof(buffer));
+				}
+			}
+		}
+
+	}
+
+#if 0
+	epoll_fd = ff_epoll_create_ptr(1);
 	if (epoll_fd < 0) {
 		printf("epoll_create failed\n");
 		return 1;
@@ -264,7 +304,9 @@ int main(int argc, char * const argv[]) {
 	/* Buffer where events are returned */
 	events = calloc (MAX_EVENTS, sizeof event);
 
-	ff_run_ptr(loop, NULL);
+	loop(NULL);
+	//ff_run_ptr(loop, NULL);
+#endif
 
 	return 0;
 }
