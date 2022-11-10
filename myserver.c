@@ -1,3 +1,4 @@
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +16,7 @@
 #include <errno.h>
 #include <assert.h>
 
-#define PORT 3679
+#define PORT 3678
 #define MAX_EVENTS 512
 
 /* kevent set */
@@ -47,6 +48,7 @@ int (*ff_epoll_ctl_ptr)(int, int, int, struct epoll_event *);
 int (*ff_epoll_wait_ptr)(int, struct epoll_event *, int, int);
 ssize_t (*ff_read_ptr)(int, void *, size_t);
 ssize_t (*ff_write_ptr)(int, const void *, size_t);
+int (*ff_setsockopt_ptr)(int, int, int, const void*, socklen_t);
 
 
 int loop(void *arg) {
@@ -203,6 +205,7 @@ int main(int argc, char * const argv[]) {
 		ff_epoll_wait_ptr = &epoll_wait;
 		ff_read_ptr = &read;
 		ff_write_ptr = &write;
+		ff_setsockopt_ptr = &setsockopt;
 	}
 
 
@@ -222,6 +225,15 @@ int main(int argc, char * const argv[]) {
 	//serverAddr.sin_addr.s_addr = inet_addr("10.250.136.21");
 	// s13's Linux Kernel
 	//serverAddr.sin_addr.s_addr = inet_addr("10.250.136.99");
+
+	int nodelay = 1;
+        ret = setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (const void*)&nodelay, sizeof(int));
+        if (ret) {
+                ff_close_ptr(sockfd);
+                printf("setsockopt errno:%d %s\n", errno, strerror(errno));
+                return -3;
+        }
+        printf("ff_setsockopt_ptr's return value: %d\n", ret);
 
 	ret = ff_bind_ptr(sockfd, (struct linux_sockaddr *)&serverAddr, sizeof(serverAddr));
 	if(ret < 0){
@@ -267,6 +279,14 @@ int main(int argc, char * const argv[]) {
 			exit(1);
 		}
 		printf("Connection accepted from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
+		int nodelay = 1;
+        	ret = setsockopt(newSocket, IPPROTO_TCP, TCP_NODELAY, (const void*)&nodelay, sizeof(int));
+        	if (ret) {
+                	ff_close_ptr(newSocket);
+                	printf("setsockopt errno:%d %s\n", errno, strerror(errno));
+        	        break;
+        	}
+        	printf("ff_setsockopt_ptr's return value: %d\n", ret);
 
 #if 0
 		if((childpid = fork()) == 0){
@@ -276,10 +296,10 @@ int main(int argc, char * const argv[]) {
 			while(1){
 				printf("Waiting for client to send somethin\n");
 				recv(newSocket, buffer, 1024, 0);
-				if(strcmp(buffer, ":exit") == 0){
+				if (strcmp(buffer, ":exit") == 0){
 					printf("Disconnected from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
 					break;
-				}else{
+				} else {
 					printf("Client: %s\n", buffer);
 					send(newSocket, buffer, strlen(buffer), 0);
 					bzero(buffer, sizeof(buffer));

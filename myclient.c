@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <netinet/tcp.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -20,7 +21,7 @@
 #include <rte_pdump.h>
 #include <signal.h>
 
-#define PORT 3679
+#define PORT 3678
 #define MAX_EVENTS 512
 #define USE_FSTACK 1
 
@@ -50,6 +51,7 @@ ssize_t (*ff_write_ptr)(int, const void *, size_t);
 int (*ff_fcntl_ptr)(int, int, ...);
 int (*ff_ioctl_ptr)(int, unsigned long, ...);
 int (*ff_getsockopt_ptr)(int, int, int, void *, socklen_t *);
+int (*ff_setsockopt_ptr)(int, int, int, const void*, socklen_t);
 
 
 static void
@@ -65,11 +67,37 @@ signal_handler(int signum)
 	}
 }
 
+unsigned getTimeMs() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec) * 1000 + (tv.tv_usec) / 1000;
+}
+
+uint64_t getTimeUs() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec) * 1000000ULL + (tv.tv_usec);
+}
+
+void busyLoop(unsigned delayMs) {
+    	unsigned startMs = getTimeMs();
+	while (1) {
+		unsigned endMs = getTimeMs();
+		if ((endMs - startMs) >= delayMs) {
+			break;
+		}
+	}
+}
+
+
+int count = 0;
+int prioritizeRecv = 0;
+uint64_t startTime = 0;
 int loop(void *arg) {
 	int nevents;
 	int i;
 	nevents = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 10000);
-	printf("Number of events %d\n", nevents);
+	//printf("Number of events %d\n", nevents);
 
 	for (int i = 0; i < nevents; i++) {
 		assert(events[i].data.fd == clientSocket);
@@ -82,33 +110,27 @@ int loop(void *arg) {
 			printf("Socket %d is ready to be read from\n", events[i].data.fd);
 			char buf[256];
 			size_t readlen = ff_read_ptr(events[i].data.fd, buf, sizeof(buf));
-			printf("READ this: %s\n", buf);
-		} else if (events[i].events & EPOLLOUT) {
+			uint64_t endTime = getTimeUs();
+			printf("+++++++++++++++++ READ this: %s (took %lu us for the round trip)\n", buf, (endTime - startTime));
+			prioritizeRecv = 0;
+		} else if (events[i].events & EPOLLOUT && !prioritizeRecv) {
 			printf("Socket %d is ready to be written to\n", events[i].data.fd);
 			printf("Client: \t");
-
 			const int bufsize = 512;
 			char buf[bufsize];
-			scanf("%s", &buf[0]);
-			for (int j = strlen(buf); j < bufsize; j++) {
-				buf[j] = '-';
-			}
 			buf[bufsize - 1] = '\0';
+                        memset(buf, '\0', bufsize);
+			sprintf(buf, "%d", count);
+			busyLoop(200);
+			//unsigned written_len = ff_write_ptr(events[i].data.fd, buf, strlen(buf));
+			unsigned written_len = ff_send_ptr(events[i].data.fd, buf, strlen(buf), 0);
+			startTime = getTimeUs();
+			printf("Wrote %u bytes [counter: %d]\n", written_len, count);
+			count++;
+			prioritizeRecv = 1;
 
-			unsigned written_len = ff_write_ptr(events[i].data.fd, buf, strlen(buf));
-			printf("Wrote %u bytes\n", written_len);
-			//ff_send_ptr(events[i].data.fd, buf, strlen(buf), 0);
-
-			//ff_send_ptr(events[i].data.fd, buf2, strlen(buf2), 0);
-
-			// Remove the last event and insert a new request (for a writtable event)
-			//ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
-
-			//event.events = EPOLLOUT;
-			//event.data.fd = clientSocket;
-			//ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, clientSocket, &event);
 		}
-		printf("Event content: %u\n", (unsigned)events[i].events);
+		//printf("Event content: %u\n", (unsigned)events[i].events);
 	}
 
 }
@@ -154,6 +176,7 @@ int main(int argc, char * const argv[]) {
 		ff_fcntl_ptr = (int (*)(int, int, ...))dlsym(handle, "ff_fcntl");
 		ff_ioctl_ptr = (int (*)(int, unsigned long, ...))dlsym(handle, "ff_ioctl");
 		ff_getsockopt_ptr = (int (*)(int, int, int, void *, socklen_t *))dlsym(handle, "ff_getsockopt");
+		ff_setsockopt_ptr = (int (*)(int, int, int, const void*, socklen_t))dlsym(handle, "ff_setsockopt");
 
 		if (	!ff_socket_ptr ||
 			!ff_send_ptr ||
@@ -171,6 +194,7 @@ int main(int argc, char * const argv[]) {
 			!ff_write_ptr ||
 			!ff_fcntl_ptr ||
 			!ff_getsockopt_ptr ||
+			!ff_setsockopt_ptr ||
 			!ff_ioctl_ptr ||
 			!ff_accept_ptr) {
 			fprintf(stderr, "Error(rest): %s\n", dlerror());
@@ -191,6 +215,7 @@ int main(int argc, char * const argv[]) {
     		ff_recv_ptr = &recv;
     		ff_connect_ptr = &connect;
     		ff_close_ptr = &close;
+		ff_setsockopt_ptr = &setsockopt;
 	}
 
 	clientSocket = ff_socket_ptr(AF_INET, SOCK_STREAM, 0);
@@ -233,11 +258,20 @@ int main(int argc, char * const argv[]) {
 		return -2;
 	}
 	printf("ff_getsockopt_ptr's return value: %d\n", ret);
+        
+	int nodelay = 1;
+        ret = ff_setsockopt_ptr(clientSocket, IPPROTO_TCP, TCP_NODELAY, (const void*)&nodelay, len);
+        if (ret) {
+		ff_close_ptr(clientSocket);
+                printf("setsockopt errno:%d %s\n", errno, strerror(errno));
+                return -3;
+	}
+	printf("ff_setsockopt_ptr's return value: %d\n", ret);
 
 	/*---Add socket to epoll---*/
 	epoll_fd = ff_epoll_create_ptr(1);
 	event.events = EPOLLIN | EPOLLOUT;
-	event.events = EPOLLOUT;
+	//event.events = EPOLLOUT;
 	event.data.fd = clientSocket;
 	ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, clientSocket, &event);
 
