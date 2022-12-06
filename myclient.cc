@@ -68,7 +68,6 @@ signal_handler(int signum)
 		fprintf(stderr, "\nSignal %d received, preparing to exit...\n",
 			signum);
 		/* uninitialize packet capture framework */
-		rte_pdump_uninit();
 		signal(signum, SIG_DFL);
 		kill(getpid(), signum);
 	}
