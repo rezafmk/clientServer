@@ -1,5 +1,23 @@
+TOPDIR=..
+
+ifeq ($(FF_PATH),)
+        FF_PATH=${TOPDIR}
+endif
+
+ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
+$(error "No installation of DPDK found, maybe you should export environment variable `PKG_CONFIG_PATH`")
+endif
+
+PKGCONF ?= pkg-config
+
+CFLAGS += -O -gdwarf-2 $(shell $(PKGCONF) --cflags libdpdk)
+
+LIBS+= $(shell $(PKGCONF) --static --libs libdpdk)
+LIBS+= -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
+LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread -lnuma
+
 all:
-	gcc -o client -ldl $(shell pkg-config --static --libs libdpdk) myclient.c
-	gcc -o server -ldl $(shell pkg-config --static --libs libdpdk) myserver.c
+	cc ${CFLAGS} -o server myserver.c ${LIBS}
+	cc ${CFLAGS} -o client myclient.c ${LIBS}
 clean:
-	rm -f client server
+	rm -f client server jclient

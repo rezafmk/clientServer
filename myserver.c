@@ -1,3 +1,4 @@
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,8 +15,9 @@
 #include "ff_epoll.h"
 #include <errno.h>
 #include <assert.h>
+#include <sys/ioctl.h>
 
-#define PORT 3675
+#define PORT 8000
 #define MAX_EVENTS 512
 
 /* kevent set */
@@ -25,9 +27,9 @@ struct kevent kevSet;
 /* kq */
 int kq;
 int sockfd;
-int epoll_fd;
-struct epoll_event event;
-struct epoll_event *events;
+int epfd;
+struct epoll_event ev;
+struct epoll_event events[MAX_EVENTS];
 
 int (*ff_init_ptr)(int, char * const);
 int (*ff_socket_ptr)(int, int, int);
@@ -47,78 +49,117 @@ int (*ff_epoll_ctl_ptr)(int, int, int, struct epoll_event *);
 int (*ff_epoll_wait_ptr)(int, struct epoll_event *, int, int);
 ssize_t (*ff_read_ptr)(int, void *, size_t);
 ssize_t (*ff_write_ptr)(int, const void *, size_t);
+int (*ff_setsockopt_ptr)(int, int, int, const void*, socklen_t);
+int (*ff_fcntl_ptr)(int, int, ...);
+int (*ff_ioctl_ptr)(int, unsigned long, ...);
+int (*ff_getsockopt_ptr)(int, int, int, void *, socklen_t *);
+int (*ff_setsockopt_ptr)(int, int, int, const void*, socklen_t);
+
+int prevnEvent = -1;
+int nclientfd = 0;
+int firstTime = 1;
+
+int loop(void *arg)
+{
+	if (firstTime) {
+		firstTime = 0;
+		sockfd = ff_socket_ptr(AF_INET, SOCK_STREAM, 0);
+		printf("sockfd:%d\n", sockfd);
+		if (sockfd < 0) {
+			printf("ff_socket failed\n");
+			exit(1);
+		}
+
+		int on = 1;
+		ff_ioctl_ptr(sockfd, FIONBIO, &on);
+
+		struct sockaddr_in my_addr;
+		bzero(&my_addr, sizeof(my_addr));
+		my_addr.sin_family = AF_INET;
+		my_addr.sin_port = htons(PORT);
+		my_addr.sin_addr.s_addr = inet_addr("10.254.153.112"); // vps23
+
+		printf("Binding to address..\n");
+		int ret = ff_bind_ptr(sockfd, (struct linux_sockaddr *)&my_addr, sizeof(my_addr));
+		if (ret < 0) {
+			printf("ff_bind failed\n");
+			exit(1);
+		}
+
+		printf("Listening...\n");
+		ret = ff_listen_ptr(sockfd, MAX_EVENTS);
+		if (ret < 0) {
+			printf("ff_listen failed\n");
+			exit(1);
+		}
 
 
-int loop(void *arg) {
-    /* Wait for events to happen */
+		assert((epfd = ff_epoll_create_ptr(10)) > 0);
+		ev.data.fd = sockfd;
+		ev.events = EPOLLIN;
+		ff_epoll_ctl_ptr(epfd, EPOLL_CTL_ADD, sockfd, &ev);
+		return 0;
+	}
+	/* Wait for events to happen */
 
-    int nevents = ff_epoll_wait_ptr(epoll_fd,  events, MAX_EVENTS, 100);
-    int i;
-    //if (nevents > 0) {
-	    //printf("Number of events %d\n", nevents);
-    //}
+	int nevents = ff_epoll_wait_ptr(epfd,  events, MAX_EVENTS, 1);
+	if (nevents != prevnEvent) {
+		printf("nevents: %d\n", nevents);
+		prevnEvent = nevents;
+	}
+	int i;
 
-    for (i = 0; i < nevents; ++i) {
-        /* Handle new connect */
-        if (events[i].data.fd == sockfd) {
-	    printf("was equal sockfd\n");
-#if 1
-            while (1) {
-                int nclientfd = ff_accept_ptr(sockfd, NULL, NULL);
-                if (nclientfd < 0) {
-                    break;
-                }
+	for (i = 0; i < nevents; ++i) {
+		/* Handle new connect */
+		if (events[i].data.fd == sockfd) {
+			printf("Accepting a connection\n");
+			int nclientfd = ff_accept_ptr(sockfd, NULL, NULL);
+			assert(nclientfd > 0);
 
-                /* Add to event list */
-                event.data.fd = nclientfd;
-                event.events  = EPOLLIN;
-                if (ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, nclientfd, &event) != 0) {
-                    printf("ff_epoll_ctl failed:%d, %s\n", errno,
-                        strerror(errno));
-                    break;
-                }
-            }
+			/* Add to event list */
+			ev.data.fd = nclientfd;
+			ev.events  = EPOLLIN;
+			if (ff_epoll_ctl_ptr(epfd, EPOLL_CTL_ADD, nclientfd, &ev) != 0) {
+				printf("ff_epoll_ctl failed:%d, %s\n", errno,
+						strerror(errno));
+				exit(0);
+			}
+			printf("Connection accepted\n");
+		} else { 
+			if (events[i].events & EPOLLERR ) {
+				/* Simply close socket */
+				ff_epoll_ctl_ptr(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+				ff_close_ptr(events[i].data.fd);
+			} else if (events[i].events & EPOLLIN) {
+				char buf[256];
+				memset(buf, '\0', 256);
+				size_t readlen = ff_read_ptr(events[i].data.fd, buf, sizeof(buf));
+				printf("Read this: %s\n", buf);
+#if 0
+				if(readlen > 0) {
+					ff_write( events[i].data.fd, html, sizeof(html) - 1);
+				} else {
+					ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+					ff_close( events[i].data.fd);
+				}
 #endif
-        } else {
-	    //printf("was not equal sockfd\n");
-#if 1
-            if (events[i].events & EPOLLERR ) {
-                /* Simply close socket */
-                ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
-                ff_close_ptr(events[i].data.fd);
-            } else if (events[i].events & EPOLLIN) {
-                char buf[256];
-                size_t readlen = ff_read_ptr( events[i].data.fd, buf, sizeof(buf));
-		printf("READ this: %s\n", buf);
-                if(readlen > 0) {
-                    ff_write_ptr(events[i].data.fd, buf, readlen);
-                } else {
-                    ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
-                    ff_close_ptr(events[i].data.fd);
-                }
-            } else {
-                printf("unknown event: %8.8X\n", events[i].events);
-            }
-#endif
-        }
-    }
-    return 0;
+			} else {
+				printf("unknown event: %8.8X\n", events[i].events);
+			}
+		}
+	}
 }
+
+void linux_stack_loop(loop_func_t myloop, void* args) {
+	while (1) {
+		myloop(args);
+	}
+}
+
 
 // In f-stack mode, run like:
 // ./client --conf /data/f-stack/config.ini --proc-type=primary --proc-id=0
 int main(int argc, char * const argv[]) {
-
-	int ret;
-	struct sockaddr_in serverAddr;
-
-	int newSocket;
-	struct sockaddr_in newAddr;
-
-	socklen_t addr_size;
-
-	char buffer[1024];
-	pid_t childpid;
 
 	void *handle;
 	handle = dlopen("libfstack.so", RTLD_NOW);
@@ -129,6 +170,7 @@ int main(int argc, char * const argv[]) {
 	fflush(stderr);
 	int use_fstack = (handle != NULL);
 
+	
 	if (use_fstack) {
 		fprintf(stderr, "Using the f-stack based version\n");
 		ff_init_ptr = (int (*)(int, char * const))dlsym(handle, "ff_init");
@@ -146,14 +188,16 @@ int main(int argc, char * const argv[]) {
     		ff_accept_ptr = (int (*)(int, struct linux_sockaddr *, socklen_t *))dlsym(handle, "ff_accept");
     		ff_listen_ptr = (int (*)(int, int))dlsym(handle, "ff_listen");
     		ff_getsockname_ptr = (int (*)(int, struct linux_sockaddr *, socklen_t *))dlsym(handle, "ff_getsockname");
-    		ff_kevent_ptr = (int (*)(int, const struct kevent *, int, struct kevent *, int, const struct timespec *))dlsym(handle, "ff_kevent");
-    		ff_kqueue_ptr = (int (*)(void))dlsym(handle, "ff_kqueue");
     		ff_run_ptr = (void (*)(loop_func_t, void *))dlsym(handle, "ff_run");
 		ff_epoll_create_ptr = (int (*)(int))dlsym(handle, "ff_epoll_create");
 		ff_epoll_ctl_ptr = (int (*)(int, int, int, struct epoll_event *))dlsym(handle, "ff_epoll_ctl");
 		ff_epoll_wait_ptr = (int (*)(int, struct epoll_event *, int, int))dlsym(handle, "ff_epoll_wait");
 		ff_read_ptr = (ssize_t (*)(int, void *, size_t))dlsym(handle, "ff_read");
 		ff_write_ptr = (ssize_t (*)(int, const void *, size_t))dlsym(handle, "ff_write");
+		ff_fcntl_ptr = (int (*)(int, int, ...))dlsym(handle, "ff_fcntl");
+		ff_ioctl_ptr = (int (*)(int, unsigned long, ...))dlsym(handle, "ff_ioctl");
+		ff_getsockopt_ptr = (int (*)(int, int, int, void *, socklen_t *))dlsym(handle, "ff_getsockopt");
+		ff_setsockopt_ptr = (int (*)(int, int, int, const void*, socklen_t))dlsym(handle, "ff_setsockopt");
 
 		if (	!ff_socket_ptr ||
 			!ff_send_ptr ||
@@ -162,28 +206,35 @@ int main(int argc, char * const argv[]) {
 			!ff_close_ptr ||
 			!ff_getsockname_ptr ||
 			!ff_bind_ptr ||
-			!ff_kevent_ptr ||
 			!ff_run_ptr ||
 			!ff_epoll_create_ptr ||
 			!ff_epoll_ctl_ptr ||
 			!ff_epoll_wait_ptr ||
-			!ff_kqueue_ptr ||
 			!ff_listen_ptr ||
 			!ff_read_ptr ||
 			!ff_write_ptr ||
+			!ff_fcntl_ptr ||
+			!ff_getsockopt_ptr ||
+			!ff_setsockopt_ptr ||
+			!ff_ioctl_ptr ||
 			!ff_accept_ptr) {
 			fprintf(stderr, "Error(rest): %s\n", dlerror());
 			dlclose(handle);
 			return EXIT_FAILURE;
 		}
-		const int myargc = 4;
-		char *myargv[4];
+#if 1
+		const int myargc = 5;
+		char *myargv[5];
 		myargv[0] = argv[0];
-		myargv[1] = "--conf=/data/f-stack/config.ini";
-		myargv[2] = "--proc-type=primary";
-		myargv[3] = "--proc-id=0";
+		myargv[1] = "--conf";
+		//myargv[2] = "/root/original_fstack/f-stack/config.ini";
+		myargv[2] = "/root/f-stack/config.ini";
+		myargv[3] = "--proc-type=primary";
+		myargv[4] = "--proc-id=0";
 		ff_init_ptr(myargc, (char * const)myargv);
-		assert((kq = ff_kqueue_ptr()) > 0);
+#else
+		ff_init_ptr(argc, argv);
+#endif
 	} else {
 		fprintf(stderr, "Using the Linux Kernel based version\n");
     		ff_socket_ptr = &socket;
@@ -198,72 +249,14 @@ int main(int argc, char * const argv[]) {
 		ff_epoll_create_ptr = &epoll_create;
 		ff_epoll_ctl_ptr = &epoll_ctl;
 		ff_epoll_wait_ptr = &epoll_wait;
+		ff_read_ptr = &read;
+		ff_write_ptr = &write;
+		ff_setsockopt_ptr = &setsockopt;
+    		ff_run_ptr =  &linux_stack_loop;
+		ff_ioctl_ptr = &ioctl;
 	}
 
-
-	sockfd = ff_socket_ptr(AF_INET, SOCK_STREAM, 0);
-	if(sockfd < 0){
-		printf("[-]Error in connection.\n");
-		exit(1);
-	}
-	printf("[+]Server Socket is created.\n");
-
-    	bzero(&serverAddr, sizeof(serverAddr));
-	serverAddr.sin_family = AF_INET;
-	serverAddr.sin_port = htons(PORT);
-	//serverAddr.sin_addr.s_addr = inet_addr("10.250.136.19");
-	// s13's DPDK
-	serverAddr.sin_addr.s_addr = inet_addr("10.250.136.21");
-	// s13's Linux Kernel
-	//serverAddr.sin_addr.s_addr = inet_addr("10.250.136.99");
-
-	ret = ff_bind_ptr(sockfd, (struct linux_sockaddr *)&serverAddr, sizeof(serverAddr));
-	if(ret < 0){
-		printf("[-]Error in binding.\n");
-		exit(1);
-	}
-
-	char myIP[16];
-	struct sockaddr_in my_addr;
-	memset(&my_addr, 0, sizeof(my_addr));
-	socklen_t len = sizeof(my_addr);
-	ff_getsockname_ptr(sockfd, (struct sockaddr *)&my_addr, &len);
-	inet_ntop(AF_INET, &my_addr.sin_addr, myIP, sizeof(myIP));
-	int myPort = ntohs(my_addr.sin_port);
-	printf("[+]Bind to port %d on IP %s\n", myPort, myIP);
-
-	if(ff_listen_ptr(sockfd, 512) == 0){
-		printf("[+]Listening....\n");
-	}else{
-		printf("[-]Error in binding.\n");
-	}
-
-#if 0
-	EV_SET(&kevSet, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
-	/* Update kqueue */
-	ff_kevent_ptr(kq, &kevSet, 1, NULL, 0, NULL);
-	printf("-------------------- Reza - Calling loop\n");
-	fflush(stdout);
-	ff_run_ptr(loop, NULL);
-#endif
-
-
-	epoll_fd = ff_epoll_create_ptr(0);
-	if (epoll_fd < 0) {
-		printf("epoll_create failed\n");
-		return 1;
-	}
-	event.data.fd = sockfd;
-	event.events = EPOLLIN;
-	int s = ff_epoll_ctl_ptr(epoll_fd, EPOLL_CTL_ADD, sockfd, &event);
-	if (s == -1) {
-		printf("epoll_ctl failed\n");
-		return 1;
-	}
-
-	/* Buffer where events are returned */
-	events = calloc (MAX_EVENTS, sizeof event);
-
+	printf("Running the loop\n");
 	ff_run_ptr(loop, NULL);
 
 	return 0;
