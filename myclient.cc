@@ -34,6 +34,8 @@ struct epoll_event events[MAX_EVENTS];
 int ret;
 int use_fstack;
 
+unsigned connStart, connEnd;
+
 int (*ff_init_ptr)(int, char * const);
 int (*ff_socket_ptr)(int, int, int);
 ssize_t (*ff_send_ptr)(int, const void*, size_t, int);
@@ -54,6 +56,7 @@ int (*ff_fcntl_ptr)(int, int, ...);
 int (*ff_ioctl_ptr)(int, unsigned long, ...);
 int (*ff_getsockopt_ptr)(int, int, int, void *, socklen_t *);
 int (*ff_setsockopt_ptr)(int, int, int, const void*, socklen_t);
+int (*ff_select_ptr)(int, fd_set *, fd_set *, fd_set *, struct timeval *);
 
 void linux_stack_loop(loop_func_t myloop, void* args) {
 	while (1) {
@@ -100,6 +103,7 @@ int prioritizeRecv = 0;
 uint64_t startTime = 0;
 int prevnEvent = -1;
 int firstTime = 1;
+int secondTime = 0;
 int loop(void *arg) {
 	if (firstTime) {
 		firstTime = 0;
@@ -150,15 +154,28 @@ int loop(void *arg) {
 			exit(errno);
 		}
 		printf("[+] Connection is done, errno: %d (%s)\n", errno, strerror(errno));
+		connStart = getTimeUs();
 
 		assert((epfd = ff_epoll_create_ptr(10)) > 0);
 		ev.data.fd = clientSocket;
 		ev.events = EPOLLIN | EPOLLOUT;
 		ff_epoll_ctl_ptr(epfd, EPOLL_CTL_ADD, clientSocket, &ev);
 		printf("Created the epoll fd\n");
-
+		secondTime = 1;
 		return 0;
 	}
+	if (secondTime) {
+		int nevents = ff_epoll_wait_ptr(epfd,  events, MAX_EVENTS, 10000);
+		for (int i = 0; i < nevents; i++) {
+			if (events[i].data.fd == clientSocket && events[i].events & EPOLLOUT) {
+				connEnd = getTimeUs();
+				printf("Finally connected (took %u us)\n", connEnd - connStart);
+				secondTime = 0;
+			}
+		}
+		return 0;
+	}
+
 	int nevents;
 	int i;
 	socklen_t len = sizeof(int);
@@ -249,6 +266,7 @@ int main(int argc, char * const argv[]) {
 		ff_ioctl_ptr = (int (*)(int, unsigned long, ...))dlsym(handle, "ff_ioctl");
 		ff_getsockopt_ptr = (int (*)(int, int, int, void *, socklen_t *))dlsym(handle, "ff_getsockopt");
 		ff_setsockopt_ptr = (int (*)(int, int, int, const void*, socklen_t))dlsym(handle, "ff_setsockopt");
+		ff_select_ptr = (int (*)(int, fd_set *, fd_set *, fd_set *, struct timeval *))dlsym(handle, "ff_select");
 
 		if (	!ff_socket_ptr ||
 			!ff_send_ptr ||
@@ -301,6 +319,7 @@ int main(int argc, char * const argv[]) {
 		ff_getsockopt_ptr = &getsockopt;
     		ff_run_ptr =  &linux_stack_loop;
 		ff_ioctl_ptr = &ioctl;
+		ff_select_ptr = &select;
 	}
 
 	printf("Running the loop\n");
