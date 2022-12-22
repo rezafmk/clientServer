@@ -21,18 +21,19 @@
 #include <rte_pdump.h>
 #include <signal.h>
 
-#define PORT 8000
 #define MAX_EVENTS 512
 #define USE_FSTACK 1
 
+int serverPort = 8000;
+
 int clientSocket;
 struct sockaddr_in serverAddr;
-struct sockaddr_in my_addr;
 int epfd;
 struct epoll_event ev;
 struct epoll_event events[MAX_EVENTS];
 int ret;
 int use_fstack;
+int id;
 
 unsigned connStart, connEnd;
 
@@ -118,14 +119,9 @@ int loop(void *arg) {
 		int on = 1;
 		ff_ioctl_ptr(clientSocket, FIONBIO, &on);
 
-		bzero(&my_addr, sizeof(my_addr));
-		my_addr.sin_family = AF_INET;
-		my_addr.sin_port = htons(8000);
-		my_addr.sin_addr.s_addr = inet_addr("10.254.153.96"); // vps22
-
 		bzero(&serverAddr, sizeof(serverAddr));
 		serverAddr.sin_family = AF_INET;
-		serverAddr.sin_port = htons(PORT);
+		serverAddr.sin_port = htons(serverPort);
 		inet_pton(AF_INET, "10.254.153.112", &(serverAddr.sin_addr)); // vp23
 
 		int err = -1;
@@ -138,13 +134,6 @@ int loop(void *arg) {
 			return -3;
 		}
 		printf("ff_setsockopt_ptr's return value: %d\n", ret);
-
-		printf("Binding to address..\n");
-		int ret = ff_bind_ptr(clientSocket, (struct sockaddr *)&my_addr, sizeof(my_addr));
-		if (ret < 0) {
-			printf("ff_bind failed\n");
-			exit(1);
-		}
 
 		errno = 0;
 		printf("Connecting...\n");
@@ -209,7 +198,7 @@ int loop(void *arg) {
 			const int bufsize = 512;
 			char buf[bufsize];
                         memset(buf, '\0', bufsize);
-			sprintf(buf, "%d", count);
+			sprintf(buf, "Client %d: %d", id, count);
 			busyLoop(200);
 			unsigned written_len = ff_send_ptr(events[i].data.fd, buf, strlen(buf), 0);
 			startTime = getTimeUs();
@@ -225,8 +214,10 @@ int loop(void *arg) {
 }
 
 // In f-stack mode, run like:
-// ./client --conf /data/f-stack/config.ini --proc-type=primary --proc-id=0
+// ./client [ID]
 int main(int argc, char * const argv[]) {
+
+	id = argc > 1 ? atoi(argv[1]) : 0;
 
 	char buffer[1024];
 
@@ -235,6 +226,9 @@ int main(int argc, char * const argv[]) {
 
 	void *handle;
 	handle = dlopen("libfstack.so", RTLD_NOW);
+	char* errstr = dlerror();
+	if (errstr != NULL)
+		printf ("A dynamic linking error occurred: (%s)\n", errstr);
 	fprintf(stderr, "dlopen is called\n");
 	fflush(stderr);
 	use_fstack = (handle != NULL);
@@ -293,11 +287,18 @@ int main(int argc, char * const argv[]) {
 		}
 		const int myargc = 5;
 		const char *myargv[5];
-		myargv[0] = argv[0];
+		const char* proc_type = id == 0 ? "--proc-type=primary" : "--proc-type=secondary";
+		char proc_id[16];
+		snprintf(proc_id, 15, "--proc-id=%d", id);
+		char config[256];
+		snprintf(config, 256, "/cb/cs1-job-logs/siemens_logs/systemf98/workdir_vp/config%d.ini", id);
+		//myargv[0] = argv[0];
+		myargv[0] = "paghpagh";
 		myargv[1] = "--conf";
-		myargv[2] = "/root/f-stack/config.ini";
-		myargv[3] = "--proc-type=primary";
-		myargv[4] = "--proc-id=0";
+		myargv[2] = config;
+		myargv[3] = proc_type;
+		myargv[4] = proc_id;
+		printf("%s %s\n", proc_type,  proc_id);
 		ff_init_ptr(myargc, (char * const)myargv);
 	} else {
 		fprintf(stderr, "Using the Linux Kernel based version\n");

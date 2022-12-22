@@ -1,3 +1,6 @@
-server on 10.250.136.21 (which is s13)
-client on 10.250.136.19 (which is s12)
-//client on 10.250.136.17 (which is s11)
+# With this version, we can have 3 clients (or even more), 2 of which f-stack and one linux client. And a single server on another machine.
+# Note this is using the IP bifurcation (so f-stack should be configured that way), and thus, there is no need for the client to bind to its ip:port anymore.
+# Note also that there are a few hardcoded paths in client/server files that need to be changed if we move this.
+# Seems like the IP addresses of f-stack clients/server don't need to be setup previoulsy (with f-stack-ifconfig or ARP), but this is not proven so noting it here (obviously this is not true for the linux client/server ones)
+clients on 10.250.136.19 (which is vp22)
+server on 10.250.136.21 (which is vp23)

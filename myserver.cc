@@ -40,9 +40,6 @@ int (*ff_accept_ptr)(int, struct sockaddr *, socklen_t *);
 int (*ff_connect_ptr)(int, const struct sockaddr *, socklen_t);
 int (*ff_bind_ptr_fstack)(int, const struct linux_sockaddr *a, socklen_t) = NULL;
 int (*ff_bind_ptr_linux)(int, const struct sockaddr *a, socklen_t) = NULL;
-
-//int (*ff_bind_ptr)(int, const struct sockaddr *a, socklen_t);
-
 int ff_bind_ptr(int sockfd, const struct sockaddr *a, socklen_t len) {
 	if (ff_bind_ptr_fstack) {
 		return ff_bind_ptr_fstack(sockfd, (const struct linux_sockaddr *)a, len);
@@ -52,9 +49,6 @@ int ff_bind_ptr(int sockfd, const struct sockaddr *a, socklen_t len) {
 	}
 	return -1;
 }
-
-
-
 int (*ff_close_ptr)(int);
 int (*ff_listen_ptr)(int, int);
 int (*ff_getsockname_ptr)(int, struct sockaddr *, socklen_t *);
@@ -175,11 +169,11 @@ int loop(void *arg)
 				printf("Read this: %s\n", buf);
 				prioritizeSend = 1;
 			} else if (events[i].events & EPOLLOUT) {
-				if (prioritizeSend) {
+				//if (prioritizeSend)
 					ff_write_ptr(events[i].data.fd, buf, 256);
 					prioritizeSend = 0;
 					printf("Sent this: %s\n", buf);
-				}
+				//}
 			} else {
 				printf("unknown event: %8.8X\n", events[i].events);
 			}
@@ -196,7 +190,7 @@ void linux_stack_loop(loop_func_t myloop, void* args) {
 
 
 // In f-stack mode, run like:
-// ./client --conf /data/f-stack/config.ini --proc-type=primary --proc-id=0
+// ./server --conf /data/f-stack/config.ini --proc-type=primary --proc-id=0
 int main(int argc, char * const argv[]) {
 
 	void *handle;
