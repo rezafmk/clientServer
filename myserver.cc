@@ -19,6 +19,7 @@
 
 #define PORT 8000
 #define MAX_EVENTS 512
+#define PATH_MAX 4096
 
 /* kevent set */
 struct kevent kevSet;
@@ -255,19 +256,20 @@ int main(int argc, char * const argv[]) {
 			dlclose(handle);
 			return EXIT_FAILURE;
 		}
-#if 1
 		const int myargc = 5;
 		const char *myargv[5];
+		char cwd[PATH_MAX];
+		char config[PATH_MAX];
+		assert(getcwd(cwd, sizeof(cwd)) != NULL);
+		snprintf(config, 256, "%s/configserver.ini", cwd);
+		printf("Loading the config file from: %s\n", config);
+
 		myargv[0] = argv[0];
 		myargv[1] = "--conf";
-		//myargv[2] = "/root/original_fstack/f-stack/config.ini";
-		myargv[2] = "/root/f-stack/config.ini";
+		myargv[2] = config;
 		myargv[3] = "--proc-type=primary";
 		myargv[4] = "--proc-id=0";
 		ff_init_ptr(myargc, (char * const)myargv);
-#else
-		ff_init_ptr(argc, argv);
-#endif
 	} else {
 		fprintf(stderr, "Using the Linux Kernel based version\n");
     		ff_socket_ptr = &socket;

@@ -23,6 +23,7 @@
 
 #define MAX_EVENTS 512
 #define USE_FSTACK 1
+#define PATH_MAX 4096
 
 int serverPort = 8000;
 
@@ -291,9 +292,11 @@ int main(int argc, char * const argv[]) {
 		char proc_id[16];
 		snprintf(proc_id, 15, "--proc-id=%d", id);
 		char config[256];
-		snprintf(config, 256, "/cb/cs1-job-logs/siemens_logs/systemf98/workdir_vp/config%d.ini", id);
-		//myargv[0] = argv[0];
-		myargv[0] = "paghpagh";
+		char cwd[PATH_MAX];
+		assert(getcwd(cwd, sizeof(cwd)) != NULL);
+		snprintf(config, 256, "%s/config%d.ini", cwd, id);
+		printf("Loading the config file from: %s\n", config);
+		myargv[0] = argv[0];
 		myargv[1] = "--conf";
 		myargv[2] = config;
 		myargv[3] = proc_type;
